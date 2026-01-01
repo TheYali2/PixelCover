@@ -1,0 +1,5 @@
+{
+  "name": "PixelCover",
+  "description": "A musical visual discovery game where you explore pixelated album art from your favorite artists using the Spotify API.",
+  "requestFramePermissions": []
+}
