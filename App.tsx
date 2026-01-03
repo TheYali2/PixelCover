@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Search, Disc, Shuffle, Loader2, Zap, XCircle, ArrowRight, X, AlertTriangle, ChevronRight, User } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Disc, Shuffle, Loader2, Zap, XCircle, ArrowRight, X, AlertTriangle, ChevronRight, User, HelpCircle, SkipForward, Trophy, Timer, Clock, AlertCircle } from 'lucide-react';
 import { searchArtists, getRandomArtistName, getRandomAlbumForArtist, SpotifyArtist } from './services/spotify';
 import PixelReveal from './components/PixelReveal';
 
@@ -13,33 +13,83 @@ interface AlbumData {
     type: 'album' | 'single' | 'compilation';
 }
 
-type GameStatus = 'MENU' | 'PLAYING' | 'WON' | 'LOST';
+type GameStatus = 'MENU' | 'PLAYING' | 'WON' | 'LOST' | 'ALL_CLEARED';
 type GameMode = 'SPECIFIC' | 'RANDOM';
+type Difficulty = 'EASY' | 'MEDIUM' | 'HARD';
+type HintLevel = 'NONE' | 'MASKED' | 'FIRST_WORD';
 
-const MAX_GUESSES = 5;
+const MAX_GUESSES = 4;
 const STARTING_PIXELATION = 35;
+const TIMER_SETTINGS = {
+    EASY: 30,
+    MEDIUM: 10,
+    HARD: 5
+};
 
 const App: React.FC = () => {
     const [status, setStatus] = useState<GameStatus>('MENU');
     const [gameMode, setGameMode] = useState<GameMode>('SPECIFIC');
+    const [difficulty, setDifficulty] = useState<Difficulty>('MEDIUM');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [toastMessage, setToastMessage] = useState<string | null>(null);
 
     const [searchInput, setSearchInput] = useState('');
     const [artistCandidates, setArtistCandidates] = useState<SpotifyArtist[]>([]);
     const [currentArtist, setCurrentArtist] = useState<SpotifyArtist | null>(null);
 
     const [showQuitConfirm, setShowQuitConfirm] = useState(false);
-
     const [targetAlbum, setTargetAlbum] = useState<AlbumData | null>(null);
     const [guessInput, setGuessInput] = useState('');
     const [guessesUsed, setGuessesUsed] = useState(0);
     const [pixelFactor, setPixelFactor] = useState(STARTING_PIXELATION);
     const [lastWrongGuess, setLastWrongGuess] = useState<string | null>(null);
     const [playedIds, setPlayedIds] = useState<string[]>([]);
+    const [lossReason, setLossReason] = useState<'SKIP' | 'TIME_UP' | 'OUT_OF_GUESSES' | null>(null);
 
-    const [score, setScore] = useState(0);
+    const [hintLevel, setHintLevel] = useState<HintLevel>('NONE');
 
+    const [enableTimer, setEnableTimer] = useState(false);
+    const [timeLeft, setTimeLeft] = useState(0);
+
+    const [score, setScore] = useState(() => {
+        if (typeof window !== 'undefined') {
+            const saved = localStorage.getItem('pixelCoverXP');
+            return saved ? parseInt(saved, 10) : 0;
+        }
+        return 0;
+    });
+
+    useEffect(() => {
+        localStorage.setItem('pixelCoverXP', score.toString());
+    }, [score]);
+
+    useEffect(() => {
+        if (status === 'PLAYING' && enableTimer && timeLeft > 0) {
+            const interval = setInterval(() => {
+                setTimeLeft((prev) => Math.max(0, prev - 1));
+            }, 1000);
+            return () => clearInterval(interval);
+        }
+    }, [status, enableTimer, timeLeft]);
+
+    useEffect(() => {
+        if (status === 'PLAYING' && enableTimer && timeLeft === 0) {
+            handleTimeUp();
+        }
+    }, [timeLeft, status, enableTimer]);
+
+    useEffect(() => {
+        if (toastMessage) {
+            const timer = setTimeout(() => setToastMessage(null), 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [toastMessage]);
+
+
+    const showToast = (msg: string) => {
+        setToastMessage(msg);
+    };
 
     const normalizeString = (str: string) => {
         return str
@@ -71,7 +121,7 @@ const App: React.FC = () => {
         setCurrentArtist(artist);
         setGameMode('SPECIFIC');
         setPlayedIds([]);
-        await loadRound(artist, []);
+        await loadRound(artist, [], difficulty);
     };
 
     const handleRandomStart = async () => {
@@ -84,7 +134,7 @@ const App: React.FC = () => {
                 setCurrentArtist(artist);
                 setGameMode('RANDOM');
                 setPlayedIds([]);
-                await loadRound(artist, []);
+                await loadRound(artist, [], difficulty);
             } else {
                 throw new Error("Artist data not found");
             }
@@ -94,17 +144,24 @@ const App: React.FC = () => {
         }
     };
 
-    const loadRound = async (artist: SpotifyArtist, currentPlayedIds: string[]) => {
+    const loadRound = async (artist: SpotifyArtist, currentPlayedIds: string[], diff: Difficulty) => {
         setLoading(true);
         setError(null);
         setArtistCandidates([]);
+        setLossReason(null);
 
         try {
-            let album = await getRandomAlbumForArtist(artist.id, currentPlayedIds);
+            let album = await getRandomAlbumForArtist(artist.id, diff, currentPlayedIds);
 
-            if (!album && currentPlayedIds.length > 0) {
-                setPlayedIds([]);
-                album = await getRandomAlbumForArtist(artist.id, []);
+            if (!album) {
+                if (gameMode === 'SPECIFIC') {
+                    setStatus('ALL_CLEARED');
+                    setLoading(false);
+                    return;
+                } else {
+                    setPlayedIds([]);
+                    album = await getRandomAlbumForArtist(artist.id, diff, []);
+                }
             }
 
             if (!album || !album.images[0]?.url) {
@@ -127,6 +184,14 @@ const App: React.FC = () => {
             setPixelFactor(STARTING_PIXELATION);
             setGuessInput('');
             setLastWrongGuess(null);
+            setHintLevel('NONE');
+
+            if (enableTimer) {
+                setTimeLeft(TIMER_SETTINGS[diff]);
+            } else {
+                setTimeLeft(0);
+            }
+
             setStatus('PLAYING');
 
         } catch (err: any) {
@@ -141,7 +206,7 @@ const App: React.FC = () => {
         if (gameMode === 'RANDOM') {
             handleRandomStart();
         } else if (currentArtist) {
-            loadRound(currentArtist, playedIds);
+            loadRound(currentArtist, playedIds, difficulty);
         } else {
             setStatus('MENU');
         }
@@ -170,25 +235,112 @@ const App: React.FC = () => {
         setLastWrongGuess(guessInput);
         setGuessInput('');
 
+        if (enableTimer) {
+            setTimeLeft(TIMER_SETTINGS[difficulty]);
+        }
+
         if (newUsed >= MAX_GUESSES) {
             setPixelFactor(1);
+            setLossReason('OUT_OF_GUESSES');
             setStatus('LOST');
-        } else {
-            const step = Math.floor(STARTING_PIXELATION / MAX_GUESSES);
-            setPixelFactor(prev => Math.max(1, prev - step - 2));
+            return;
         }
+
+        const step = Math.floor(STARTING_PIXELATION / MAX_GUESSES);
+        setPixelFactor(prev => Math.max(4, prev - step - 1));
     };
 
     const handleWin = () => {
         setPixelFactor(1);
         setStatus('WON');
+        const difficultyMulti = difficulty === 'EASY' ? 1 : difficulty === 'MEDIUM' ? 1.5 : 2;
+        let basePoints = Math.max(100, 1000 - (guessesUsed * 200));
 
-        const points = Math.max(100, 1000 - (guessesUsed * 200));
-        setScore(s => s + points);
+        if (enableTimer && timeLeft > 0) {
+            basePoints += (timeLeft * 10);
+        }
+
+        setScore(s => Math.floor(s + (basePoints * difficultyMulti)));
+    };
+
+    const handleSkip = () => {
+        if (score < 50) {
+            showToast("Not enough XP! Need 50 XP to skip.");
+            return;
+        }
+
+        setPixelFactor(1);
+        setLossReason('SKIP');
+        setStatus('LOST');
+        setScore(s => Math.max(0, s - 50));
+    };
+
+    const handleTimeUp = () => {
+        setPixelFactor(1);
+        setLossReason('TIME_UP');
+        setStatus('LOST');
+    };
+
+    const handleHint = () => {
+        if (score < 25) {
+            showToast("Not enough XP! Need 25 XP for a hint.");
+            return;
+        }
+
+        if (hintLevel === 'NONE') setHintLevel('MASKED');
+        else if (hintLevel === 'MASKED') setHintLevel('FIRST_WORD');
+        setScore(s => Math.max(0, s - 25));
+    };
+
+    const getExtraInfoHint = () => {
+        if (!targetAlbum || hintLevel === 'NONE') return null;
+        const name = targetAlbum.albumName;
+
+        const featMatch = name.match(/\((feat\.|with|starring)(.*?)\)/i);
+        const remixMatch = name.match(/-(.*?)remix/i) || name.match(/\((.*?)remix\)/i);
+
+        if (featMatch) {
+            return <span className="text-theme-purple font-bold text-xs">feat. {featMatch[2]}</span>;
+        }
+        if (remixMatch) {
+            return <span className="text-theme-purple font-bold text-xs">Remix Version</span>;
+        }
+
+        return null;
+    };
+
+    const getHintText = () => {
+        if (!targetAlbum) return '';
+        const cleanTitle = targetAlbum.albumName.split('(')[0].split('-')[0].trim();
+
+        if (hintLevel === 'MASKED') {
+            return cleanTitle.replace(/[\p{L}\p{N}]/gu, '_ ');
+        }
+
+        if (hintLevel === 'FIRST_WORD') {
+            const words = cleanTitle.split(' ');
+            if (words.length > 1) {
+                const first = words[0];
+                const rest = words.slice(1).join(' ').replace(/[\p{L}\p{N}]/gu, '_ ');
+                return `${first} ${rest}`;
+            } else {
+                return cleanTitle.substring(0, 2) + cleanTitle.substring(2).replace(/[\p{L}\p{N}]/gu, '_ ');
+            }
+        }
+        return '';
     };
 
     const handleQuitRequest = () => {
         setShowQuitConfirm(true);
+    };
+
+    const forceQuitToMenu = () => {
+        setStatus('MENU');
+        setSearchInput('');
+        setArtistCandidates([]);
+        setCurrentArtist(null);
+        setPlayedIds([]);
+        setShowQuitConfirm(false);
     };
 
     const confirmQuit = () => {
@@ -200,11 +352,29 @@ const App: React.FC = () => {
         setPlayedIds([]);
     };
 
+    const getLossMessage = () => {
+        switch (lossReason) {
+            case 'TIME_UP': return "TIME'S UP";
+            case 'SKIP': return "SKIPPED";
+            case 'OUT_OF_GUESSES': return "GAME OVER";
+            default: return "LOST";
+        }
+    };
+
     return (
         <div className="min-h-screen bg-theme-bg text-white font-sans flex flex-col relative overflow-x-hidden">
 
+            {toastMessage && (
+                <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-[70] animate-fade-in">
+                    <div className="bg-red-500/90 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold backdrop-blur-md border border-white/10">
+                        <AlertCircle size={18} />
+                        <span className="text-sm">{toastMessage}</span>
+                    </div>
+                </div>
+            )}
+
             <nav className="w-full flex justify-between items-center px-6 py-4 absolute top-0 left-0 z-20 pointer-events-none">
-                <div className="flex items-center gap-2 pointer-events-auto cursor-pointer" onClick={() => status === 'MENU' && window.location.reload()}>
+                <div className="flex items-center gap-2 pointer-events-auto cursor-pointer" onClick={forceQuitToMenu}>
                     <Disc className="text-theme-pink animate-[spin_10s_linear_infinite]" size={24} />
                     <span className="font-black text-xl tracking-tighter">PIXEL<span className="text-theme-purple">COVER</span></span>
                 </div>
@@ -215,7 +385,7 @@ const App: React.FC = () => {
                         <span className="font-bold font-mono text-sm">{score}</span>
                     </div>
 
-                    {status !== 'MENU' && (
+                    {status !== 'MENU' && status !== 'ALL_CLEARED' && (
                         <button
                             onClick={handleQuitRequest}
                             className="w-10 h-10 flex items-center justify-center bg-zinc-900/60 backdrop-blur-md hover:bg-red-500/10 hover:border-red-500/50 border border-white/5 rounded-2xl transition-all text-zinc-400 hover:text-red-500"
@@ -252,6 +422,22 @@ const App: React.FC = () => {
                     </div>
                 )}
 
+                {status === 'ALL_CLEARED' && (
+                    <div className="w-full flex flex-col items-center animate-fade-in text-center gap-6">
+                        <div className="w-24 h-24 bg-theme-purple/20 rounded-full flex items-center justify-center mb-4 ring-4 ring-theme-purple/50">
+                            <Trophy className="text-theme-purple w-12 h-12" />
+                        </div>
+                        <h1 className="text-4xl font-black text-white">ALL CLEARED!</h1>
+                        <p className="text-zinc-400 max-w-xs">You have guessed every song in {currentArtist?.name}'s collection for this difficulty.</p>
+                        <button
+                            onClick={confirmQuit}
+                            className="bg-white text-black hover:bg-zinc-200 px-8 py-4 rounded-xl font-bold text-lg transition-all flex items-center gap-2"
+                        >
+                            Back to Menu
+                        </button>
+                    </div>
+                )}
+
                 {status === 'MENU' && (
                     <div className="w-full flex flex-col gap-8 animate-fade-in text-center mt-12">
                         <div className="space-y-2">
@@ -261,6 +447,33 @@ const App: React.FC = () => {
                             <p className="text-zinc-500 text-base md:text-lg">
                                 Uncover the pixelated cover.
                             </p>
+                        </div>
+
+                        <div className="flex flex-col items-center gap-4 mb-2">
+                            <div className="flex justify-center gap-2">
+                                {(['EASY', 'MEDIUM', 'HARD'] as Difficulty[]).map((level) => (
+                                    <button
+                                        key={level}
+                                        onClick={() => setDifficulty(level)}
+                                        className={`px-4 py-2 rounded-lg font-bold text-xs tracking-wider transition-all border ${difficulty === level
+                                            ? 'bg-white text-black border-white'
+                                            : 'bg-transparent text-zinc-500 border-white/10 hover:bg-white/5'
+                                            }`}
+                                    >
+                                        {level}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <button
+                                onClick={() => setEnableTimer(!enableTimer)}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-xs tracking-wider transition-all border ${enableTimer
+                                    ? 'bg-theme-purple/20 text-theme-purple border-theme-purple/50'
+                                    : 'bg-transparent text-zinc-500 border-white/10 hover:bg-white/5'
+                                    }`}
+                            >
+                                <Timer size={14} /> {enableTimer ? 'TIMER ON' : 'TIMER OFF'}
+                            </button>
                         </div>
 
                         <div className="flex flex-col gap-4 w-full max-w-sm mx-auto">
@@ -331,16 +544,32 @@ const App: React.FC = () => {
                     </div>
                 )}
 
-                {status !== 'MENU' && targetAlbum && (
+                {status !== 'MENU' && status !== 'ALL_CLEARED' && targetAlbum && (
                     <div className="w-full flex flex-col items-center animate-fade-in w-full max-w-sm gap-6 mt-8">
 
-                        <div className="text-center">
+                        <div className="text-center w-full">
                             <h3 className="text-2xl font-black uppercase tracking-tight text-white">
                                 {targetAlbum.artistName}
                             </h3>
-                            <p className="text-theme-purple text-xs font-bold tracking-widest uppercase mt-1 opacity-80">
-                                Guess the {targetAlbum.type}
-                            </p>
+                            <div className="flex items-center justify-center gap-2 mt-1 flex-wrap">
+                                <p className="text-theme-purple text-xs font-bold tracking-widest uppercase opacity-80">
+                                    Guess the {targetAlbum.type}
+                                </p>
+                                <span className="bg-zinc-800 text-zinc-400 text-[10px] font-bold px-2 py-0.5 rounded-full">{difficulty}</span>
+                            </div>
+
+                            {enableTimer && (status === 'PLAYING' || status === 'WON') && (
+                                <div className="w-full mt-4 flex items-center gap-3">
+                                    <Clock size={14} className={`${timeLeft <= 5 && status === 'PLAYING' ? 'text-red-500 animate-pulse' : 'text-zinc-500'}`} />
+                                    <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
+                                        <div
+                                            className={`h-full transition-all duration-1000 linear ${timeLeft <= 5 ? 'bg-red-500' : 'bg-theme-purple'}`}
+                                            style={{ width: `${(timeLeft / TIMER_SETTINGS[difficulty]) * 100}%` }}
+                                        ></div>
+                                    </div>
+                                    <span className={`font-mono text-xs font-bold ${timeLeft <= 5 ? 'text-red-500' : 'text-zinc-500'}`}>{timeLeft}s</span>
+                                </div>
+                            )}
                         </div>
 
                         <div className="relative w-full shadow-2xl">
@@ -354,9 +583,17 @@ const App: React.FC = () => {
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-theme-purple/20 backdrop-blur-sm animate-fade-in border-2 border-theme-purple z-10">
                                     <div className="bg-black/90 px-6 py-4 border border-theme-purple text-center transform -rotate-3 shadow-2xl rounded-xl">
                                         <h2 className="text-3xl font-black text-theme-purple italic tracking-tighter">CORRECT!</h2>
-                                        <div className="flex items-center justify-center gap-2 mt-1 text-white font-mono text-sm">
-                                            <Zap className="fill-yellow-400 text-yellow-400" size={14} />
-                                            <span>+{Math.max(100, 1000 - (guessesUsed * 200))} PTS</span>
+                                        <div className="flex flex-col gap-1 mt-2">
+                                            <div className="flex items-center justify-center gap-2 text-white font-mono text-sm">
+                                                <Zap className="fill-yellow-400 text-yellow-400" size={14} />
+                                                <span>+{difficulty === 'EASY' ? 100 : difficulty === 'MEDIUM' ? 150 : 200} PTS</span>
+                                            </div>
+                                            {enableTimer && timeLeft > 0 && (
+                                                <div className="flex items-center justify-center gap-2 text-theme-purple font-mono text-xs font-bold">
+                                                    <Clock size={12} />
+                                                    <span>+{timeLeft * 10} SPEED BONUS</span>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -365,7 +602,9 @@ const App: React.FC = () => {
                             {status === 'LOST' && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-red-900/30 backdrop-blur-sm animate-fade-in border-2 border-red-500 z-10">
                                     <div className="bg-black/90 px-6 py-4 border border-red-500 text-center shadow-2xl rounded-xl">
-                                        <h2 className="text-3xl font-black text-red-500 uppercase tracking-tighter">GAME OVER</h2>
+                                        <h2 className="text-3xl font-black text-red-500 uppercase tracking-tighter">
+                                            {getLossMessage()}
+                                        </h2>
                                     </div>
                                 </div>
                             )}
@@ -387,6 +626,15 @@ const App: React.FC = () => {
 
                         {status === 'PLAYING' && (
                             <div className="w-full space-y-3">
+                                {hintLevel !== 'NONE' && (
+                                    <div className="flex flex-col gap-1 items-center animate-fade-in">
+                                        <div className="text-center font-mono text-theme-pink tracking-[0.2em] text-lg break-words">
+                                            {getHintText()}
+                                        </div>
+                                        {getExtraInfoHint()}
+                                    </div>
+                                )}
+
                                 <div className="relative group">
                                     <div className="absolute -inset-0.5 bg-gradient-to-r from-theme-pink to-theme-purple rounded-xl blur opacity-20 group-hover:opacity-60 transition duration-500"></div>
                                     <div className="relative bg-zinc-950 rounded-xl p-1 flex border border-white/10">
@@ -408,12 +656,30 @@ const App: React.FC = () => {
                                     </div>
                                 </div>
 
-                                {lastWrongGuess && (
-                                    <div className="text-red-400 text-xs text-center animate-bounce-small flex items-center justify-center gap-1.5 font-medium">
-                                        <XCircle size={12} />
-                                        <span>Incorrect</span>
-                                    </div>
-                                )}
+                                <div className="flex justify-between items-center px-1">
+                                    <button
+                                        onClick={handleHint}
+                                        disabled={hintLevel === 'FIRST_WORD'}
+                                        className="flex items-center gap-1.5 text-xs font-bold text-zinc-500 hover:text-white transition-colors disabled:opacity-30 disabled:hover:text-zinc-500"
+                                    >
+                                        <HelpCircle size={14} />
+                                        {hintLevel === 'NONE' ? 'HINT (-25 XP)' : hintLevel === 'MASKED' ? 'MORE HINT (-25 XP)' : 'MAX HINT'}
+                                    </button>
+
+                                    {lastWrongGuess && (
+                                        <div className="text-red-400 text-xs text-center animate-bounce-small flex items-center justify-center gap-1.5 font-medium absolute left-1/2 transform -translate-x-1/2">
+                                            <XCircle size={12} />
+                                            <span>Incorrect</span>
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={handleSkip}
+                                        className="flex items-center gap-1.5 text-xs font-bold text-zinc-500 hover:text-red-400 transition-colors"
+                                    >
+                                        SKIP (-50 XP) <SkipForward size={14} />
+                                    </button>
+                                </div>
                             </div>
                         )}
 
@@ -446,6 +712,7 @@ const App: React.FC = () => {
                 )}
             </main>
 
+            <div className="fixed bottom-2 right-4 text-zinc-700 text-[10px] font-bold z-50 pointer-events-none">Created by Yali</div>
             <div className="fixed bottom-0 left-0 w-full h-24 bg-gradient-to-t from-black to-transparent pointer-events-none z-0"></div>
         </div>
     );

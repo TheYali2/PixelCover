@@ -79,19 +79,49 @@ export const getRandomArtistName = async (): Promise<string> => {
   return 'The Beatles';
 };
 
-export const getRandomAlbumForArtist = async (artistId: string, excludeIds: string[] = []): Promise<SpotifyAlbum | null> => {
+export const getArtistTopTracks = async (artistId: string): Promise<SpotifyAlbum[]> => {
   const token = await getAccessToken();
-
-  const response = await fetch(`https://api.spotify.com/v1/artists/${artistId}/albums?include_groups=album,single&limit=50`, {
+  const response = await fetch(`https://api.spotify.com/v1/artists/${artistId}/top-tracks?market=US`, {
     headers: { 'Authorization': `Bearer ${token}` },
   });
-
   const data = await response.json();
-  if (!data.items || data.items.length === 0) {
+
+  if (!data.tracks) return [];
+
+  return data.tracks.map((track: any) => ({
+    id: track.id,
+    name: track.name,
+    images: track.album.images,
+    release_date: track.album.release_date,
+    external_urls: { spotify: track.external_urls.spotify },
+    album_type: 'single' // Top tracks are treated as individual items
+  }));
+};
+
+export const getRandomAlbumForArtist = async (
+  artistId: string,
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD',
+  excludeIds: string[] = []
+): Promise<SpotifyAlbum | null> => {
+  const token = await getAccessToken();
+  let items: SpotifyAlbum[] = [];
+
+  if (difficulty === 'EASY') {
+    items = await getArtistTopTracks(artistId);
+  } else {
+    const limit = difficulty === 'MEDIUM' ? 20 : 50;
+    const response = await fetch(`https://api.spotify.com/v1/artists/${artistId}/albums?include_groups=album,single&limit=${limit}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data = await response.json();
+    items = data.items || [];
+  }
+
+  if (items.length === 0) {
     return null;
   }
 
-  const availableItems = data.items.filter((item: SpotifyAlbum) => !excludeIds.includes(item.id));
+  const availableItems = items.filter((item: SpotifyAlbum) => !excludeIds.includes(item.id));
 
   if (availableItems.length === 0) {
     return null;
