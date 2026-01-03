@@ -94,7 +94,7 @@ export const getArtistTopTracks = async (artistId: string): Promise<SpotifyAlbum
     images: track.album.images,
     release_date: track.album.release_date,
     external_urls: { spotify: track.external_urls.spotify },
-    album_type: 'single' // Top tracks are treated as individual items
+    album_type: 'single'
   }));
 };
 
